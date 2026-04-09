@@ -472,6 +472,113 @@
             color: var(--ink);
         }
 
+        /* ─── DIRECT DOWNLOAD BAR ─── */
+        .direct-download-section {
+            margin-bottom: 28px;
+            background: var(--surface2);
+            border: 1px solid var(--border2);
+            border-radius: var(--radius);
+            padding: 22px 24px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .direct-download-section::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--accent2), var(--accent));
+        }
+
+        .direct-label {
+            font-family: var(--mono);
+            font-size: 0.65rem;
+            color: var(--accent2);
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            margin-bottom: 14px;
+            display: block;
+        }
+
+        .direct-row {
+            display: flex;
+            gap: 10px;
+            align-items: stretch;
+        }
+
+        .direct-input-wrap {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            background: var(--surface3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 0 16px;
+            gap: 10px;
+            transition: border-color 0.2s;
+        }
+
+        .direct-input-wrap:focus-within {
+            border-color: var(--accent2);
+        }
+
+        .direct-input-wrap .icon {
+            color: var(--accent2);
+            font-size: 1.1rem;
+        }
+
+        #direct-title {
+            flex: 1;
+            background: none;
+            border: none;
+            outline: none;
+            color: var(--white);
+            font-family: var(--sans);
+            font-size: 0.9rem;
+            padding: 14px 0;
+        }
+
+        #direct-title::placeholder { color: var(--muted); }
+
+        .btn-direct {
+            padding: 14px 24px;
+            background: linear-gradient(135deg, var(--accent2), #e04a10);
+            border: none;
+            border-radius: var(--radius-sm);
+            color: var(--white);
+            font-family: var(--display);
+            font-weight: 700;
+            font-size: 0.85rem;
+            letter-spacing: 1px;
+            cursor: pointer;
+            text-transform: uppercase;
+            transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+            white-space: nowrap;
+        }
+
+        .btn-direct:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(255, 107, 53, 0.45);
+        }
+
+        .btn-direct:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .direct-hint {
+            font-family: var(--mono);
+            font-size: 0.65rem;
+            color: var(--muted);
+            margin-top: 10px;
+            letter-spacing: 0.5px;
+        }
+
+        .direct-hint span { color: var(--accent); }
+
         /* ─── DOWNLOAD SECTION ─── */
         #download-section {
             display: none;
@@ -861,6 +968,23 @@
             <div id="loading-text" class="loading-text">Querying AI…</div>
         </section>
 
+        <!-- DIRECT DOWNLOAD -->
+        <div class="direct-download-section">
+            <span class="direct-label">⬇ Direct Download — Skip AI, go straight to panels</span>
+            <div class="direct-row">
+                <div class="direct-input-wrap">
+                    <span class="icon">⚡</span>
+                    <input type="text" id="direct-title"
+                        placeholder="e.g. Solo Leveling, Tower of God 1-50, Omniscient Reader ch 5"
+                        onkeydown="if(event.key==='Enter') startDirectDownload()">
+                </div>
+                <button class="btn-direct" id="direct-btn" onclick="startDirectDownload()">⬇ Download Now</button>
+            </div>
+            <div class="direct-hint">
+                Format: <span>Title</span> — or — <span>Title 1-50</span> (chapter range) — or — <span>Title ch 5</span> (single chapter)
+            </div>
+        </div>
+
         <!-- RESULTS -->
         <section id="results-section">
             <div class="section-header">
@@ -1012,6 +1136,90 @@
             document.getElementById('download-btn').disabled = false;
             ds.style.display = 'block';
             ds.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // ── DIRECT DOWNLOAD ─────────────────────────────────────────────────
+        function startDirectDownload() {
+            const raw = document.getElementById('direct-title').value.trim();
+            if (!raw) {
+                document.getElementById('direct-title').focus();
+                return;
+            }
+
+            // Reuse the same download infrastructure as the AI flow
+            selectedSlug = raw;
+            document.getElementById('dl-title-display').textContent = raw;
+            document.getElementById('download-btn').disabled = false;
+
+            // Show the download section + console
+            const ds = document.getElementById('download-section');
+            ds.style.display = 'block';
+            ds.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            // Kick off the download immediately
+            const consoleEl = document.getElementById('console');
+            const container = document.getElementById('console-container');
+            const dlBtn = document.getElementById('download-btn');
+            const directBtn = document.getElementById('direct-btn');
+
+            container.style.display = 'flex';
+            dlBtn.disabled = true;
+            directBtn.disabled = true;
+            directBtn.textContent = '⏳ Downloading…';
+            consoleEl.innerHTML = '';
+
+            setConsoleStatus('LIVE', 'live');
+            log(`[DIRECT] Queuing: ${raw}`, 'log-accent');
+            log(`Bypassing AI — searching sources directly...`, 'log-dim');
+
+            const es = new EventSource(`${API_URL}/download-stream/${encodeURIComponent(raw)}`);
+
+            es.onmessage = (event) => {
+                const line = event.data;
+                const upper = line.toUpperCase();
+                let cls = 'log-info';
+
+                if (upper.includes('ERROR') || upper.includes('FAIL')) cls = 'log-error';
+                else if (upper.includes('COMPLETE') || upper.includes('DONE') || upper.includes('SUCCESS') || upper.includes('SAVED') || upper.includes('OK:')) cls = 'log-ok';
+                else if (upper.includes('WARN') || upper.includes('SKIP')) cls = 'log-warn';
+                else if (upper.includes('DOWNLOAD') || upper.includes('CHAPTER') || upper.includes('SEARCHING') || upper.includes('PAGE')) cls = 'log-dl';
+                else if (upper.includes('DEBUG') || upper.includes('---') || upper.includes('===')) cls = 'log-dim';
+                else if (upper.includes('INFO') || upper.includes('SELECTED') || upper.includes('VALIDATED')) cls = 'log-accent';
+
+                if (upper.includes('PAGES SAVED') || upper.includes('OK:')) {
+                    refreshGallery();
+                }
+
+                if (line.includes('[STREAM_FINISHED]')) {
+                    setConsoleStatus('Done ✓', 'live');
+                    dlBtn.disabled = false;
+                    directBtn.disabled = false;
+                    directBtn.textContent = '⬇ Download Now';
+                    es.close();
+                    setTimeout(refreshGallery, 800);
+                    return;
+                } else if (upper.includes('FAIL:')) {
+                    setConsoleStatus('Failed', 'error');
+                    dlBtn.disabled = false;
+                    directBtn.disabled = false;
+                    directBtn.textContent = '⬇ Download Now';
+                } else if (upper.includes('COMPLETE:')) {
+                    setConsoleStatus('Done ✓', 'live');
+                }
+
+                log(line, cls);
+            };
+
+            es.onerror = () => {
+                if (es.readyState === EventSource.CLOSED) return;
+                log('Connection lost.', 'log-error');
+                setConsoleStatus('Disconnected', 'error');
+                dlBtn.disabled = false;
+                directBtn.disabled = false;
+                directBtn.textContent = '⬇ Download Now';
+                es.close();
+                refreshGallery();
+            };
         }
 
         function startDownload() {
