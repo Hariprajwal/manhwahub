@@ -1,6 +1,7 @@
 <div align="center">
 
 # ⚡ MANHWA HUB
+<img width="1918" height="763" alt="image" src="https://github.com/user-attachments/assets/98b586e8-bbee-488e-a65f-b853691864e5" />
 
 **An AI-Powered, Battle-Tested Manhwa & Manga Orchestrator**
 
