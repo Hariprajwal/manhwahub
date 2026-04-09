@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import List
 import datetime
 import asyncio
+import sys
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import importlib.util
 from manager import ManhwaOrchestrator
 
