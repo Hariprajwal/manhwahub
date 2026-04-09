@@ -57,7 +57,7 @@ async def recommend_manhwa(prompt: str):
     current_year = datetime.datetime.now().year
     try:
         system_prompt = f"""You are a Manhwa expert. 
-Provide EXACTLY 5 highly relevant manhwa recommendations for {current_year}.
+Provide EXACTLY 10 highly relevant manhwa recommendations for {current_year}.
 STRICT RULES:
 1. Title MUST be the official short name (Max 5 words).
 2. Description MUST be a single concise sentence (Max 15 words).
