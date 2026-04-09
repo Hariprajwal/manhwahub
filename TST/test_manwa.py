@@ -135,21 +135,6 @@ def generate_variations(title: str) -> list:
         if low.endswith(suffix):
             out.append(base[: -len(suffix)])
             break
-    
-    # ADDED: Id-Method slug variations for direct URL guessing
-    slug_base = re.sub(r'[^a-z0-9\s-]', '', low).replace(' ', '-')
-    slug_base = re.sub(r'-+', '-', slug_base).strip('-')
-    if slug_base and slug_base not in out:
-        out.append(slug_base)
-        
-    # Article stripping (the, a, an)
-    no_articles = re.sub(r'\b(the|a|an)\b', '', low).strip()
-    if no_articles != low:
-        slug_no_art = re.sub(r'[^a-z0-9\s-]', '', no_articles).replace(' ', '-')
-        slug_no_art = re.sub(r'-+', '-', slug_no_art).strip('-')
-        if slug_no_art and slug_no_art not in out:
-            out.append(slug_no_art)
-
     return list(dict.fromkeys(out))
 
 
@@ -209,13 +194,17 @@ def download_image(url: str, save_path: Path, referer: str = "") -> bool:
 
             resp.raise_for_status()
 
+            # Reject HTML masquerading as an image
+            ct = resp.headers.get("Content-Type", "")
+            if "html" in ct.lower():
+                raise ValueError(f"Got HTML instead of image — site is blocking us")
+
             save_path.parent.mkdir(parents=True, exist_ok=True)
             with open(save_path, "wb") as f:
                 for chunk in resp.iter_content(16384):
                     f.write(chunk)
 
-            # HARDENED: Scan every plausible image attribute (Id-Method)
-            # We reject tiny files (error pages, empty gifs)
+            # Reject tiny files (error pages, empty gifs)
             fsize = save_path.stat().st_size
             if fsize < 1024:
                 save_path.unlink(missing_ok=True)
@@ -776,22 +765,19 @@ class BaseMadaraSource:
             chapters = []
             seen = set()
             
-            # HARDENED: AJAX Chapter Ripping (Id-Method)
+            # Check for AJAX chapter loading
             manga_id_input = soup.select_one(".rating-post-id")
             if manga_id_input and self.AJAX_CHAPTERS:
                 manga_id = manga_id_input["value"]
-                # Try both standard and hidden AJAX endpoints
-                for action in ["manga_get_chapters", "wp_manga_get_chapters"]:
-                    ajax_url = f"{self.BASE}/wp-admin/admin-ajax.php"
-                    res = SESSION.post(
-                        ajax_url, 
-                        data={"action": action, "manga": manga_id}, 
-                        headers={**BROWSER_HEADERS, "Referer": self.REFERER, "X-Requested-With": "XMLHttpRequest"},
-                        timeout=15,
-                    )
-                    if res.status_code == 200 and "chapter" in res.text.lower():
-                        soup = BeautifulSoup(res.text, "html.parser")
-                        break
+                ajax_url = f"{self.BASE}/wp-admin/admin-ajax.php"
+                res = SESSION.post(
+                    ajax_url, 
+                    data={"action": "manga_get_chapters", "manga": manga_id}, 
+                    headers={**BROWSER_HEADERS, "Referer": self.REFERER},
+                    timeout=15,
+                )
+                if res.status_code == 200:
+                    soup = BeautifulSoup(res.text, "html.parser")
                     
             links = soup.select("li.wp-manga-chapter a, div.wp-manga-chapter a, div.chapter-link a")
             if not links:
@@ -871,567 +857,18 @@ class WeebrookSource(BaseMadaraSource):
     AJAX_CHAPTERS = False
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  SOURCE 6:  W E E B   C E N T R A L   (Premium Custom Source)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class WeebCentralSource:
-    NAME    = "WeebCentral"
-    KEY     = "weebcentral"
-    BASE    = "https://weebcentral.com"
-    REFERER = "https://weebcentral.com"
-
-    def search(self, title: str) -> list:
-        log(f"  [{self.NAME}] Searching: '{title}'")
-        try:
-            r = SESSION.get(
-                f"{self.BASE}/search",
-                params={"text": title},
-                headers={**BROWSER_HEADERS, "Referer": self.REFERER},
-                timeout=15,
-            )
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            
-            results = []
-            seen = set()
-            # WeebCentral search results are often in <a> tags with /series/
-            for a in soup.select('a[href*="/series/"]'):
-                href = a.get("href", "")
-                if href in seen or not "/series/" in href:
-                    continue
-                seen.add(href)
-                
-                # Title might be in an <img> alt or nested text
-                name = a.get_text(strip=True)
-                if not name:
-                    img = a.select_one("img")
-                    name = img.get("alt", "") if img else "Unknown"
-                
-                if not name or not is_manga_result(name):
-                    continue
-                
-                slug = href.rstrip("/").split("/")[-1]
-                results.append({
-                    "id":     href, # WeebCentral uses full URL or specific UUID
-                    "url":    href,
-                    "title":  name,
-                    "status": "?",
-                    "source": self.KEY,
-                })
-            log(f"  [{self.NAME}] {len(results)} results")
-            return results
-        except Exception as e:
-            log(f"  [{self.NAME}] Search failed: {e}")
-            return []
-
-    def get_chapters(self, series_url: str) -> list:
-        log(f"  [{self.NAME}] Fetching chapters...")
-        try:
-            r = SESSION.get(
-                series_url,
-                headers={**BROWSER_HEADERS, "Referer": self.REFERER},
-                timeout=15,
-            )
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            
-            chapters = []
-            seen = set()
-            
-            # WeebCentral chapters are in <a> tags with /chapter/ (note singular)
-            # Selector updated to catch both /chapter/ and /chapters/ for resilience
-            links = soup.select('a[href*="/chapter/"], a[href*="/chapters/"]')
-            for a in reversed(links): # Often listed descending
-                href = a.get("href", "")
-                if href in seen:
-                    continue
-                seen.add(href)
-                
-                text = a.get_text(strip=True)
-                m = re.search(r"([\d.]+)", text)
-                ch_num = m.group(1) if m else "0"
-                
-                chapters.append({
-                    "id":    href,
-                    "url":   href,
-                    "num":   ch_num,
-                    "title": text or f"Chapter {ch_num}",
-                    "pages": 0,
-                })
-            
-            # Sort ascending
-            try:
-                chapters.sort(key=lambda c: float(c["num"]))
-            except:
-                pass
-                
-            log(f"  [{self.NAME}] {len(chapters)} chapters")
-            return chapters
-        except Exception as e:
-            log(f"  [{self.NAME}] Chapter error: {e}")
-            return []
-
-    def get_page_urls(self, chapter_url: str) -> list:
-        try:
-            r = SESSION.get(
-                chapter_url,
-                headers={**BROWSER_HEADERS, "Referer": self.REFERER},
-                timeout=15,
-            )
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            urls = []
-            
-            # WeebCentral uses <section> or container for images
-            # ADDED: .reader-content img and .chapter-content img found in final inspection
-            for img in soup.select(".reader-content img, .chapter-content img, img.chapter-image, section#reader img, section img"):
-                # Use multi-attribute scan principle
-                src = (
-                    img.get("data-src") or 
-                    img.get("data-lazy-src") or 
-                    img.get("src") or 
-                    ""
-                ).strip()
-                
-                if src and src.startswith("http") and src not in urls:
-                    if not any(k in src.lower() for k in ["logo", "icon", "avatar"]):
-                        urls.append(src)
-                        
-            return urls
-        except Exception as e:
-            log(f"  [{self.NAME}] Page URL error: {e}")
-            return []
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SOURCE 7:  M A N G A N A T O   /   M A N G A K A K A L O T
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ManganatoSource:
-    NAME    = "Manganato"
-    KEY     = "manganato"
-    # Primary domain for 2026. Mirrors used as backup.
-    BASE    = "https://manganato.com"
-    MIRRORS = ["https://chapmanganato.to", "https://readmanganato.to", "https://mangakakalot.com"]
-    REFERER = "https://manganato.com"
-
-    def search(self, title: str) -> list:
-        log(f"  [{self.NAME}] Searching: '{title}'")
-        # Try mirrors first if primary is unstable
-        domains = [self.BASE] + self.MIRRORS
-        for domain in domains:
-            try:
-                # Manganato search often uses underscores for spaces in slug
-                # Use /search/story/ for Manganato variants
-                search_url = f"{domain}/search/story/{quote(title.replace(' ', '_'))}"
-                r = SESSION.get(search_url, headers={**BROWSER_HEADERS, "Referer": domain}, timeout=15)
-                if r.status_code != 200:
-                    continue
-                
-                soup = BeautifulSoup(r.text, "html.parser")
-                results = []
-                # Selectors: .search-story-item or .item-title
-                items = soup.select(".search-story-item, .story_item, .panel-search-story-item")
-                for item in items[:10]:
-                    a = item.select_one("h3 a, .story_name a, .item-title, a")
-                    if not a: continue
-                    href = a.get("href", "")
-                    if not href.startswith("http"):
-                        href = domain + href
-                    
-                    name = a.get_text(strip=True)
-                    if not name or not is_manga_result(name):
-                        continue
-                        
-                    results.append({
-                        "id":     href,
-                        "url":    href,
-                        "title":  name,
-                        "status": "?",
-                        "source": self.KEY,
-                    })
-                
-                if results:
-                    log(f"  [{self.NAME}] Results found on {domain}")
-                    return results
-            except Exception:
-                continue
-        return []
-
-    def get_chapters(self, manga_url: str) -> list:
-        log(f"  [{self.NAME}] Fetching chapters...")
-        # Determine referer based on domain
-        ref = self.REFERER
-        for m in self.MIRRORS:
-            if m in manga_url:
-                ref = m
-                break
-                
-        try:
-            r = SESSION.get(manga_url, headers={**BROWSER_HEADERS, "Referer": ref}, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            
-            chapters = []
-            seen = set()
-            
-            # Selector: .chapter-name (Manganato) or .a-h (New Manganato)
-            links = soup.select(".chapter-name, .row-content-chapter a, .chapter-list a, .a-h")
-            for a in links:
-                if a.name != "a":
-                    a = a.find_parent("a") or a.find("a")
-                if not a: continue
-                
-                href = a.get("href", "")
-                if href in seen: continue
-                seen.add(href)
-                
-                text = a.get_text(strip=True)
-                m = re.search(r"([\d.]+)", text)
-                ch_num = m.group(1) if m else "0"
-                
-                chapters.append({
-                    "id":    href,
-                    "url":   href,
-                    "num":   ch_num,
-                    "title": text or f"Chapter {ch_num}",
-                    "pages": 0,
-                })
-            
-            log(f"  [{self.NAME}] {len(chapters)} chapters")
-            return chapters
-        except Exception as e:
-            log(f"  [{self.NAME}] Chapter error: {e}")
-            return []
-
-    def get_page_urls(self, chapter_url: str) -> list:
-        try:
-            # Need to pick a referer based on the domain of the chapter_url
-            curr_ref = self.REFERER
-            for m in self.MIRRORS:
-                if m in chapter_url:
-                    curr_ref = m
-                    break
-
-            r = SESSION.get(chapter_url, headers={**BROWSER_HEADERS, "Referer": curr_ref}, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            urls = []
-            
-            # Selector: .container-chapter-reader img
-            for img in soup.select(".container-chapter-reader img, .v-content img, .reading-content img"):
-                src = (img.get("src") or img.get("data-src") or "").strip()
-                if src and src.startswith("http") and src not in urls:
-                    if not any(k in src.lower() for k in ["logo", "icon", "avatar"]):
-                        # MangaBox CDN often uses these domains
-                        if any(k in src.lower() for k in ["mangakakalot", "manganelo", "mangabat", "mkcdn"]):
-                           urls.append(src)
-            
-            # Fallback: if no specific CDN images found, take all large images
-            if not urls:
-                for img in soup.select("img"):
-                    src = (img.get("src") or img.get("data-src") or "").strip()
-                    if src and src.startswith("http") and src not in urls:
-                         if not any(k in src.lower() for k in ["logo", "icon", "avatar", "ad"]):
-                            urls.append(src)
-
-            return urls
-        except Exception as e:
-            log(f"  [{self.NAME}] Page URL error: {e}")
-            return []
-
-            return urls
-        except Exception as e:
-            log(f"  [{self.NAME}] Page URL error: {e}")
-            return []
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SOURCE 8:  A S U R A   S C A N S   (Premium High-Res Source)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class AsuraSource:
-    NAME    = "Asura"
-    KEY     = "asura"
-    BASE    = "https://asurascans.com"
-    REFERER = "https://asurascans.com"
-
-    def search(self, title: str) -> list:
-        log(f"  [{self.NAME}] Searching: '{title}'")
-        try:
-            # Asura uses /browse?search=...
-            r = SESSION.get(
-                f"{self.BASE}/browse",
-                params={"search": title},
-                headers={**BROWSER_HEADERS, "Referer": self.REFERER},
-                timeout=15,
-            )
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            
-            results = []
-            seen = set()
-            # Links to /comics/ with h3 title
-            for a in soup.select('a[href*="/comics/"]'):
-                href = a.get("href", "")
-                if href in seen: continue
-                seen.add(href)
-                
-                if not href.startswith("http"):
-                    href = self.BASE + href
-                
-                title_tag = a.select_one("h3, span.text-white")
-                name = title_tag.get_text(strip=True) if title_tag else ""
-                
-                if not name:
-                    img = a.select_one("img")
-                    name = img.get("alt", "") if img else "Unknown"
-                
-                if not name or not is_manga_result(name):
-                    continue
-                    
-                results.append({
-                    "id":     href,
-                    "url":    href,
-                    "title":  name,
-                    "status": "?",
-                    "source": self.KEY,
-                })
-            log(f"  [{self.NAME}] {len(results)} results")
-            return results
-        except Exception as e:
-            log(f"  [{self.NAME}] Search error: {e}")
-            return []
-
-    def get_chapters(self, series_url: str) -> list:
-        log(f"  [{self.NAME}] Fetching chapters...")
-        try:
-            r = SESSION.get(series_url, headers={**BROWSER_HEADERS, "Referer": self.REFERER}, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            
-            chapters = []
-            seen = set()
-            
-            # Chapters are links containing /chapter/
-            links = soup.select('a[href*="/chapter/"]')
-            for a in reversed(links):
-                href = a.get("href", "")
-                if href in seen: continue
-                seen.add(href)
-                
-                if not href.startswith("http"):
-                    href = self.BASE + href
-                    
-                text = a.get_text(strip=True)
-                m = re.search(r"([\d.]+)", text)
-                ch_num = m.group(1) if m else "0"
-                
-                chapters.append({
-                    "id":    href,
-                    "url":   href,
-                    "num":   ch_num,
-                    "title": text or f"Chapter {ch_num}",
-                    "pages": 0,
-                })
-            
-            try:
-                chapters.sort(key=lambda c: float(c["num"]))
-            except:
-                pass
-                
-            log(f"  [{self.NAME}] {len(chapters)} chapters")
-            return chapters
-        except Exception as e:
-            log(f"  [{self.NAME}] Chapter error: {e}")
-            return []
-
-    def get_page_urls(self, chapter_url: str) -> list:
-        try:
-            r = SESSION.get(chapter_url, headers={**BROWSER_HEADERS, "Referer": self.REFERER}, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            urls = []
-            
-            # Asura reader images
-            for img in soup.select("img.fixed-image, div.reader-area img, .chapter-container img"):
-                src = (img.get("src") or img.get("data-src") or "").strip()
-                if src and src.startswith("http") and src not in urls:
-                    if not any(k in src.lower() for k in ["logo", "icon", "avatar"]):
-                        urls.append(src)
-            return urls
-        except Exception as e:
-            log(f"  [{self.NAME}] Page URL error: {e}")
-            return []
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SOURCE 9:  R E A P E R   S C A N S   (High-Quality Group)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ReaperSource:
-    NAME    = "Reaper"
-    KEY     = "reaper"
-    BASE    = "https://reaperscans.com"
-    MIRRORS = ["https://reaperscans.gg", "https://reaperscans.org"]
-    REFERER = "https://reaperscans.com"
-
-    def search(self, title: str) -> list:
-        log(f"  [{self.NAME}] Searching: '{title}'")
-        for domain in [self.BASE] + self.MIRRORS:
-            try:
-                r = SESSION.get(
-                    domain,
-                    params={"s": title, "post_type": "wp-manga"},
-                    headers={**BROWSER_HEADERS, "Referer": domain},
-                    timeout=15,
-                )
-                if r.status_code != 200: continue
-                soup = BeautifulSoup(r.text, "html.parser")
-                results = []
-                for item in soup.select(".search-story-item, h3 a"):
-                    if item.name != "a":
-                         item = item.select_one("a")
-                    if not item: continue
-                    
-                    href = item.get("href", "")
-                    name = item.get_text(strip=True)
-                    if not name or not is_manga_result(name): continue
-                    
-                    results.append({
-                        "id":     href,
-                        "url":    href,
-                        "title":  name,
-                        "status": "?",
-                        "source": self.KEY,
-                    })
-                if results:
-                    log(f"  [{self.NAME}] Results found on {domain}")
-                    return results
-            except:
-                continue
-        return []
-
-    def get_chapters(self, series_url: str) -> list:
-        log(f"  [{self.NAME}] Fetching chapters...")
-        try:
-            r = SESSION.get(series_url, headers={**BROWSER_HEADERS, "Referer": self.REFERER}, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            chapters = []
-            seen = set()
-            for a in soup.select('.chapter-name, a[href*="/chapter/"]'):
-                href = a.get("href", "")
-                if href in seen: continue
-                seen.add(href)
-                text = a.get_text(strip=True)
-                m = re.search(r"([\d.]+)", text)
-                ch_num = m.group(1) if m else "0"
-                chapters.append({"id": href, "url": href, "num": ch_num, "title": text})
-            return sorted(chapters, key=lambda c: float(c["num"]) if c["num"].replace(".","").isdigit() else 0)
-        except Exception as e:
-             log(f"  [{self.NAME}] Chapter error: {e}")
-             return []
-
-    def get_page_urls(self, chapter_url: str) -> list:
-        try:
-            r = SESSION.get(chapter_url, headers={**BROWSER_HEADERS, "Referer": self.REFERER}, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            urls = []
-            for img in soup.select("img.wp-manga-chapter-img, .reader-area img"):
-                src = (img.get("src") or img.get("data-src") or "").strip()
-                if src and src.startswith("http") and src not in urls:
-                    urls.append(src)
-            return urls
-        except Exception as e:
-            log(f"  [{self.NAME}] Page URL error: {e}")
-            return []
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SOURCE 10:  M A N G A   P A R K   (Aggregator v5)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class MangaParkSource:
-    NAME    = "MangaPark"
-    KEY     = "mangapark"
-    BASE    = "https://mangapark.net"
-    MIRRORS = ["https://mangapark.org", "https://mangapark.tv"]
-    REFERER = "https://mangapark.net"
-
-    def search(self, title: str) -> list:
-        log(f"  [{self.NAME}] Searching: '{title}'")
-        for domain in [self.BASE] + self.MIRRORS:
-            try:
-                r = SESSION.get(f"{domain}/search", params={"word": title}, headers={**BROWSER_HEADERS, "Referer": domain}, timeout=15)
-                if r.status_code != 200: continue
-                soup = BeautifulSoup(r.text, "html.parser")
-                results = []
-                for a in soup.select('a.item-title, a[href*="/manga/"]'):
-                    href = a.get("href", "")
-                    if "/manga/" not in href: continue
-                    if not href.startswith("http"): href = domain + href
-                    name = a.get_text(strip=True)
-                    if not name or not is_manga_result(name): continue
-                    results.append({"id": href, "url": href, "title": name, "status": "?", "source": self.KEY})
-                if results:
-                    log(f"  [{self.NAME}] Results found on {domain}")
-                    return results
-            except: continue
-        return []
-
-    def get_chapters(self, series_url: str) -> list:
-        log(f"  [{self.NAME}] Fetching chapters...")
-        try:
-            r = SESSION.get(series_url, headers={**BROWSER_HEADERS, "Referer": self.REFERER}, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            chapters = []
-            seen = set()
-            for a in soup.select('a[href*="/chapter/"]'):
-                href = a.get("href", "")
-                if href in seen: continue
-                seen.add(href)
-                if not href.startswith("http"): href = self.REFERER + href
-                text = a.get_text(strip=True)
-                m = re.search(r"([\d.]+)", text)
-                ch_num = m.group(1) if m else "0"
-                chapters.append({"id": href, "url": href, "num": ch_num, "title": text})
-            return chapters
-        except Exception as e:
-            log(f"  [{self.NAME}] Chapter error: {e}")
-            return []
-
-    def get_page_urls(self, chapter_url: str) -> list:
-        try:
-            r = SESSION.get(chapter_url, headers={**BROWSER_HEADERS, "Referer": self.REFERER}, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            urls = []
-            for img in soup.select("div.manga-page img, .img-manga img"):
-                src = (img.get("src") or img.get("data-src") or "").strip()
-                if src and src.startswith("http") and src not in urls:
-                    urls.append(src)
-            return urls
-        except Exception as e:
-            log(f"  [{self.NAME}] Page URL error: {e}")
-            return []
-
-# ═══════════════════════════════════════════════════════════════════════════════
 #  SOURCE REGISTRY
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ALL_SOURCES = {
-    "mangadex":    MangaDexSource(),
-    "weebcentral": WeebCentralSource(),
-    "asura":       AsuraSource(),
-    "reaper":      ReaperSource(),
-    "manganato":   ManganatoSource(),
-    "mangapark":   MangaParkSource(),
-    "mangabuddy":  MangaBuddySource(),
-    "mangapill":   MangaPillSource(),
-    "kunmanga":    KunMangaSource(),
-    "weebrook":    WeebrookSource(),
+    "mangadex":   MangaDexSource(),
+    "mangabuddy": MangaBuddySource(),
+    "mangapill":  MangaPillSource(),
+    "kunmanga":   KunMangaSource(),
+    "weebrook":   WeebrookSource(),
 }
 
-SOURCE_ORDER = ["mangadex", "weebcentral", "asura", "reaper", "manganato", "mangapark", "weebrook", "kunmanga", "mangabuddy", "mangapill"]
+SOURCE_ORDER = ["mangadex", "weebrook", "kunmanga", "mangabuddy", "mangapill"]
 
 
 
@@ -1590,8 +1027,8 @@ def pick_from_list(items: list, label: str):
 
 def run(title=None, download_all=False, ch_range=None, auto=False):
     log("\n" + "═" * 58)
-    log("  MANHWA DOWNLOADER v5.0 — PRODUCTION")
-    log("  Sources: MangaDex · WeebCentral · Manganato · etc.")
+    log("  MANHWA DOWNLOADER v5.0 — 3 Verified Sources")
+    log("  MangaDex  ·  MangaBuddy  ·  MangaPill")
     log("═" * 58)
 
     if not title:
@@ -1614,11 +1051,8 @@ def run(title=None, download_all=False, ch_range=None, auto=False):
         log("\nFAIL: No results from any source.")
         return
 
-    # Sort: exact match first, then by SOURCE_ORDER priority
-    all_results.sort(key=lambda x: (
-        normalize(main_title) != normalize(x["title"]),
-        SOURCE_ORDER.index(x["source"]) if x["source"] in SOURCE_ORDER else 99
-    ))
+    # Sort: exact match first
+    all_results.sort(key=lambda x: (normalize(main_title) != normalize(x["title"]), x["source"]))
     log(f"\nFound {len(all_results)} result(s).")
 
     # Pick
@@ -1716,11 +1150,7 @@ def server_mode(title: str, all_chapters=True, ch_range=None):
         log(f"FAIL: No results for '{main_title}'.")
         sys.exit(1)
 
-    # Sort: exact match first, then by SOURCE_ORDER priority
-    all_results.sort(key=lambda x: (
-        normalize(main_title) != normalize(x["title"]),
-        SOURCE_ORDER.index(x["source"]) if x["source"] in SOURCE_ORDER else 99
-    ))
+    all_results.sort(key=lambda x: (normalize(main_title) != normalize(x["title"]), x["source"]))
 
     # Validate: pick first candidate that actually has chapters
     manga = None
