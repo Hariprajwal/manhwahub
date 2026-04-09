@@ -1,0 +1,14 @@
+# 
+
+## **Hi there, I'm Roshan <img src="https://raw.githubusercontent.com/MartinHeinz/MartinHeinz/master/wave.gif" width="15px">**
+
+- **Just passing by 👻**
+- **Creating new things and having fun 🚀**
+
+##  🐙 **Stats**
+
+![github stats](./profile/stats.svg)
+
+![top languages](./profile/top-langs.svg)
+
+![Wakatime](./profile/wakatime.svg)

@@ -1,0 +1,5 @@
+downloads/
+temp_repos/
+__pycache__/
+*.zip
+.env

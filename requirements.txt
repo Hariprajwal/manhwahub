@@ -1,0 +1,22 @@
+# Core Project Dependencies
+openai
+fastapi
+uvicorn
+rich
+questionary
+requests
+aiohttp
+python-dotenv
+pillow
+
+# Common Tool Dependencies (for Asura, Comick, AIO, etc.)
+cloudscraper
+playwright
+beautifulsoup4
+PyQt6
+lxml
+tqdm
+fpdf2
+img2pdf
+py7zr
+natsort
