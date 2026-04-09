@@ -183,43 +183,66 @@ async def download_stream(request: Request, slug: str):
             clean_title, ch_from, ch_to = parse_chapter_info(slug)
             yield f"data: INFO: Target Range: Chapter {ch_from} to {ch_to}\n\n"
             
-            # 2. Discovery Stage: Try MangaDex first for official aliases
-            yield f"data: INFO: [Discovery] Searching MangaDex for official aliases: {clean_title}...\n\n"
+            # 2. Discovery Stage: Try MangaDex API for official aliases
+            yield f"data: INFO: [Discovery] Querying MangaDex API for: {clean_title}...\n\n"
             
-            # Use SourceFileLoader to handle the uppercase .PY extension safely
-            from importlib.machinery import SourceFileLoader
-            scraper_path = str(BASE_DIR / "NEW-MANWA.PY")
-            try:
-                new_manwa = SourceFileLoader("new_manwa", scraper_path).load_module()
-            except Exception as loader_err:
-                raise ImportError(f"Could not load scraper at {scraper_path}: {loader_err}")
-            
-            md = new_manwa.MangaDexSource()
-            md_results = md.search(clean_title)
-            
+            import requests as _req
             master_titles = []
-            if md_results:
-                best = md_results[0]
-                raw_titles = [best["title"]] + best.get("aliases", [])
-                yield f"data: INFO: [Discovery] Found on MangaDex. Raw List: {raw_titles}\n\n"
-            else:
-                yield f"data: WARN: [Discovery] No MangaDex hit. Falling back to AI Normalization...\n\n"
+            raw_titles = []
+            try:
+                md_params = {
+                    "title": clean_title, "limit": 5,
+                    "contentRating[]": ["safe", "suggestive", "erotica"],
+                    "order[relevance]": "desc",
+                }
+                md_resp = _req.get(
+                    "https://api.mangadex.org/manga",
+                    params=md_params, timeout=12,
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                md_data = md_resp.json().get("data", [])
+                if md_data:
+                    best = md_data[0]
+                    attrs = best["attributes"]
+                    titles_dict = attrs.get("title", {})
+                    main_name = titles_dict.get("en") or next(iter(titles_dict.values()), clean_title)
+                    raw_titles = [main_name]
+                    # Only keep ASCII-safe aliases (Japanese/Chinese crash Windows terminal)
+                    for alt in attrs.get("altTitles", []):
+                        for v in alt.values():
+                            try:
+                                v.encode("ascii")
+                                raw_titles.append(v)
+                            except UnicodeEncodeError:
+                                pass
+                    yield f"data: INFO: [Discovery] MangaDex hit: {raw_titles[:5]}\n\n"
+                else:
+                    yield f"data: WARN: [Discovery] No MangaDex hit.\n\n"
+            except Exception as md_err:
+                yield f"data: WARN: [Discovery] MangaDex query failed: {md_err}\n\n"
+            
+            # If MangaDex missed, try AI normalization
+            if not raw_titles:
+                yield f"data: INFO: [Discovery] Falling back to AI Normalization...\n\n"
                 norm = await get_ai_normalization(clean_title)
                 if norm.get("main") == "NOT_FOUND":
-                    yield f"data: FAIL: AI Normalization failed. No such manhwa found for '{clean_title}'.\n\n"
+                    yield f"data: FAIL: AI says title not found: '{clean_title}'.\n\n"
                     return
                 raw_titles = [norm["main"]] + norm.get("alternatives", [])
-                
-            # Deduplicate array case-insensitively, keeping punctuation stripped
+            
+            # Always include the user's original query
+            raw_titles.insert(0, clean_title)
+            
+            # Deduplicate case-insensitively
             seen = set()
             for t in raw_titles:
                 t_clean = t.strip()
-                t_normalized = t_clean.lower().replace(".", "").replace("!", "").replace(",", "")
-                if t_normalized and t_normalized not in seen:
-                    seen.add(t_normalized)
+                t_norm = t_clean.lower().replace(".", "").replace("!", "").replace(",", "").replace("'", "")
+                if t_norm and t_norm not in seen:
+                    seen.add(t_norm)
                     master_titles.append(t_clean)
             
-            yield f"data: INFO: Master List (Deduplicated): {master_titles}\n\n"
+            yield f"data: INFO: Master List: {master_titles}\n\n"
 
             # 3. Trigger Orchestration
             for line in orchestrator.orchestrate_stream(master_titles, ch_range=(ch_from, ch_to)):
