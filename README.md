@@ -11,7 +11,7 @@
 
 </div>
 
-**Manhwa Hub** is a next-generation scraping engine and web dashboard designed to seamlessly search, discover, and download high-quality manga and manhwa panels. It abandons the unreliable "dead scrapers" approach in favor of a highly curated, production-grade **3-Source Titan Engine**.
+**Manhwa Hub** is a next-generation scraping engine and web dashboard designed to seamlessly search, discover, and download high-quality manga and manhwa panels. It abandons the unreliable "dead scrapers" approach in favor of a highly curated, production-grade **3-Source Titan Engine**..
 
 ---
 
